@@ -1,4 +1,4 @@
-/* A000008 number of ways for coin change problem with 1,5,10,25.
+/* A001299 number of ways for coin change problem with 1,5,10,25.
    algorithm: the standard dp algorithm.
    calculates up to a(n)<=maxlonglong (n<=41050344) */
 
