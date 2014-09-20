@@ -100,17 +100,17 @@ int ullwitness(unsigned long long n,unsigned long long a) {
 /* deterministic miller-rabin for 64-bit numbers, return 1 if n is prime */
 /* it seems the routine breaks down if n>=2^63 */
 int ullmillerrabin(unsigned long long n) {
-	if(n<4294967296LU) return millerrabin(n);
+	if(n<4294967296ULL) return millerrabin(n);
 	if(!(n&1)) return 0;
-	if(n<4759123141LL)
+	if(n<4759123141ULL)
 		return ullwitness(n,2) && ullwitness(n,7) && ullwitness(n,61);
-	if(n<2152302898747LL)
+	if(n<2152302898747ULL)
 		return ullwitness(n,2) && ullwitness(n,3) && ullwitness(n,5) &&
 		       ullwitness(n,7) && ullwitness(n,11);
-	if(n<3474749660383LL)
+	if(n<3474749660383ULL)
 		return ullwitness(n,2) && ullwitness(n,3) && ullwitness(n,5) &&
 		       ullwitness(n,7) && ullwitness(n,11) && ullwitness(n,13);
-	if(n<341550071728321LL)
+	if(n<341550071728321ULL)
 		return ullwitness(n,2) && ullwitness(n,3) && ullwitness(n,5) &&
 		       ullwitness(n,7) && ullwitness(n,11) && ullwitness(n,13) &&
 		       ullwitness(n,17);
@@ -126,7 +126,7 @@ int main() {
 	for(;n<(1ULL<<32);n+=2) {
 		if(millerrabin((unsigned int)n)) printf("%lld %lld\n",i++,n);
 	}
-	for(;n>10;n+=2) {
+	for(;n<(1ULL<<63);n+=2) {
 		if(ullmillerrabin(n)) printf("%lld %lld\n",i++,n);
 	}
 	return 0;
