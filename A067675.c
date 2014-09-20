@@ -62,7 +62,7 @@ void precalc() {
 int calcterms() {
 	int cur=1,prev=0,done,i,j,k,l,m;
 	precalc();
-  for(i=1;i<MAX;i++) mpz_init_set_si(table[i],0);
+	for(i=1;i<MAX;i++) mpz_init_set_si(table[i],0);
 	/* initialize dp array */
 	for(i=0;i<2;i++) for(j=0;j<2;j++) for(k=0;k<2;k++)
 		for(l=0;l<MAX;l++) for(m=0;m<MAX;m++)
