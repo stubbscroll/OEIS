@@ -121,13 +121,13 @@ int ullmillerrabin(unsigned long long n) {
 
 int main() {
 	unsigned long long n,i=1;
-	for(n=2;n<SMALL;n++) if(isprime((int)n)) printf("%lld %lld\n",i++,n);
+	for(n=2;n<SMALL;n++) if(isprime((int)n)) printf("%llu %llu\n",i++,n);
 	if(n%2==0) n++;
 	for(;n<(1ULL<<32);n+=2) {
-		if(millerrabin((unsigned int)n)) printf("%lld %lld\n",i++,n);
+		if(millerrabin((unsigned int)n)) printf("%llu %llu\n",i++,n);
 	}
 	for(;n<(1ULL<<63);n+=2) {
-		if(ullmillerrabin(n)) printf("%lld %lld\n",i++,n);
+		if(ullmillerrabin(n)) printf("%llu %llu\n",i++,n);
 	}
 	return 0;
 }
