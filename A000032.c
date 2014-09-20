@@ -8,8 +8,8 @@ int main() {
 	int i;
 	mpz_init_set_si(a,2);
 	mpz_init_set_si(b,1);
-	puts("0 2");
-	puts("1 1");
+	gmp_printf("0 %Zd\n",a);
+	gmp_printf("1 %Zd\n",b);
 	for(i=2;i>-1;i+=2) {
 		mpz_add(a,a,b);
 		mpz_add(b,b,a);
