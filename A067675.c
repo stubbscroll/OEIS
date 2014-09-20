@@ -1,4 +1,4 @@
-/* A067675 number of fixed polyominoes with n cells.
+/* A067675 number of fixed convex polyominoes with n cells.
    the algorithm as designed kind of needs to calculate all values in one
    swoop, rather than calculating in-between spitting out terms.
    calculating 1000 terms takes 3 hours 49 minutes on my i7-2600k. */
