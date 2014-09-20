@@ -452,16 +452,6 @@ void solve(int n,int m,mpz_t ans) {
 	mpz_clear(temp);
 }
 
-int findx(int v) {
-	int i;
-	for(i=1;;i++,v-=i-1) if(v<=i) return v-1;
-}
-
-int findy(int v) {
-	int i;
-	for(i=1;;i++,v-=i-1) if(v<=i) return i-1;
-}
-
 int main() {
 	int height,width,i=1;
 	mpz_t r;
