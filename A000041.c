@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <gmp.h>
 
-#define MAX 10001
+#define MAX 1000001
 
 /* dynamically growing an array of mpz_t with realloc somehow breaks all
    numbers in the array. using static array instead */
