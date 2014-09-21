@@ -1,6 +1,7 @@
 /* A000018 a(n) is the number of positive integers <= 2^n on the
    form x^2+16y^2.
-   algorithm: stupid brute force, try all x,y. this is currently not good
+   algorithm: stupid brute force, try all x,y, store all numbers, sort then
+   and count unique numbers. this is currently not good
    enough to generate all the terms that OEIS has, this program stops at
    term 29 with 1.6 GB RAM. a(n+1) requires roughly twice the amount of
    RAM as a(n). */
@@ -22,11 +23,11 @@ int compl(const void *A,const void *B) {
 }
 
 ll calc(ll N) {
-	ll r=0;
+	ll r=1;
 	int x,y,i;
 	n=0;
 	for(x=0;(ll)x*x<=N;x++) {
-		for(y=0;(ll)x*x+16LL*y*y<=N;y++) {
+		for(y=0;(ll)x*x+16LL*y*y<=N;y++) if(x+y) {
 			if(n==MAX) puts("out of memory"),exit(0);
 			a[n++]=(ll)x*x+16LL*y*y;
 		}
