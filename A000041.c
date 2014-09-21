@@ -41,7 +41,6 @@ int main() {
 	int i;
 	mpz_init(r);
 	for(i=0;i<MAX;i++) mpz_init(a[i]);
-	mpz_init(r);
 	for(i=0;i<MAX;i++) {
 		calcterm(i,r);
 		gmp_printf("%d %Zd\n",i,r);
