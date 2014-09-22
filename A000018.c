@@ -1,10 +1,8 @@
 /* A000018 a(n) is the number of positive integers <= 2^n on the
    form x^2+16y^2.
    algorithm: stupid brute force, try all x,y, store all numbers, sort then
-   and count unique numbers. this is currently not good
-   enough to generate all the terms that OEIS has, this program stops at
-   term 29 with 1.6 GB RAM. a(n+1) requires roughly twice the amount of
-   RAM as a(n). */
+   count unique numbers. this approach requires an excessive amount of RAM
+   to compute the 36 terms that OEIS has. */
 
 #include <stdio.h>
 #include <stdlib.h>
