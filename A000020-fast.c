@@ -3,8 +3,11 @@
    formula: phi(2^n-1)/n.
    algorithm: start with N=2^n-1. we have that when d|n, 2^d-1|2^n-1.
    for all d|n, factorize gcd(N,2^d-1) and let N=gcd(N,2^d-1).
-   whenever a huge number needs to be factorized, bring out the heavy
-   machinery (pollard-rho implemented so far).
+   we try the following factorization algorithms in order:
+   - trial division
+   - pollard-rho
+   - pollard p-1
+   - (more to come later, like elliptic curve method and quadratic sieve)
    then process the list of prime factors and calculate phi.
 */
 
@@ -17,10 +20,7 @@
 
 /* limit (number of digits) for pollard-rho. TODO adjust. the routine takes
    a long while on as little as 33 digits */
-/* we haven't implemented anything more powerful than pollard-rho yet,
-   so run it on everything */
-//#define POLLARDLIM 36
-#define POLLARDLIM 10000
+#define POLLARDLIM 32
 
 #define MAXF 10000
 mpz_t factors[MAXF];
@@ -29,6 +29,43 @@ int fn;
 #define ERROR puts("error, too many factors. increase MAXF and recompile"),exit(0)
 
 /* start of factorization routines! */
+
+/* pollard p-1! hope that n has a factor p such that p-1 has only small
+   prime factors. return 0 if it fails, otherwise return 1 and return
+   factor in a.
+   lazy man's implementation that just does c^b! */
+int pollardp1(mpz_t n,mpz_t a,int maxb,int maxc) {
+	int b,c,r=0;
+	mpz_t m,g;
+	mpz_init(m); mpz_init(g);
+	for(c=2;c<2+maxc;c++) {
+		mpz_set_ui(m,c);
+		for(b=2;b<=maxb;b++) {
+			mpz_powm_ui(m,m,b,n);
+			/* check for factor periodically */
+			if(!(b&31)) {
+				mpz_sub_ui(g,m,1);
+				mpz_gcd(g,g,n);
+				if(mpz_cmp_ui(g,1)>0 && mpz_cmp(g,n)<0) {
+					r=1;
+					mpz_set(a,g);
+					goto end;
+				}
+			}
+		}
+		/* we're done, check again */
+		mpz_sub_ui(g,m,1);
+		mpz_gcd(g,g,n);
+		if(mpz_cmp_ui(g,1)>0 && mpz_cmp(g,n)<0) {
+			r=1;
+			mpz_set(a,g);
+			goto end;
+		}
+	}
+end:
+	mpz_clear(m); mpz_clear(g);
+	return r;
+}
 
 /* pollard-rho! when a factor is found, return it in a. the routine will run
    until a factor is found. it is the caller's responsibility to call this
@@ -103,13 +140,24 @@ void factorize2(mpz_t n) {
 		factorize2(m);
 		mpz_clear(m);
 		return;
-	} else {
-		gmp_printf("TODO large number (%d digits)\n",d);
-//		gmp_printf("todo heavier machinery needed to factorize %Zd (%d digits)\n",n,d);
-		if(fn==MAXF) ERROR;
-		mpz_set(factors[fn++],n);
+	}
+	/* always try pollard p-1 */
+	mpz_init(m);
+	if(pollardp1(n,m,300000,2)) {
+		factorize2(m);
+		mpz_divexact(m,n,m);
+		factorize2(m);
+		mpz_clear(m);
 		return;
 	}
+	mpz_clear(m);
+	
+	
+	
+	gmp_printf("TODO large number (%d digits)\n",d);
+//	gmp_printf("todo heavier machinery needed to factorize %Zd (%d digits)\n",n,d);
+	if(fn==MAXF) ERROR;
+	mpz_set(factors[fn++],n);
 }
 
 /* "black box" factorization that lumps all factors in factors[] in no
