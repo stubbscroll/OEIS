@@ -3,20 +3,24 @@
    formula: phi(2^n-1)/n.
    algorithm: start with N=2^n-1. we have that when d|n, 2^d-1|2^n-1.
    for all d|n, factorize gcd(N,2^d-1) and let N=gcd(N,2^d-1).
-   we try the following factorization algorithms in order:
+   if n is prime, then all prime factors must be of the form 2kn+1 for
+   integer k>=1 and must also be 1 or 7 mod 8.
+   the following factorization algorithms are tried in order:
    - trial division
    - pollard-rho
    - pollard p-1
-   - elliptic curve method. SLOW and in dire need of optimization or
-     discovering what's wrong. alpertron destroys my implementation
-     speed-wise
+   - elliptic curve method (speed is roughly 66% of alpertron, i think)
    - (more to come later, qs will definitely be added)
+   - (maybe also add a check for primes of the form 2kn+1)
    then process the list of prime factors and calculate phi.
-   this version finds 256 of 400 terms, but it had to run overnight.
+   this is very tunable. ecm is much slower than the other methods, so
+   pollard-rho and p-1 could be given more time.
 */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include <gmp.h>
 
 /* limit for trial division */
@@ -36,129 +40,168 @@ gmp_randstate_t gmprand;
 
 /* start of factorization routines! */
 
-int isprime(int n) {
-	int i;
-	if(n<4) return n>1;
-	if(!(n&1)) return 0;
-	for(i=3;i*i<=n;i++) if(n%i==0) return 0;
-	return 1;
+/* misc routines, such as sieve */
+
+#define MAXP 100000000
+typedef long long ll;
+
+char sieve[MAXP];
+int prime[5761456];
+int primes;
+
+void createsieve() {
+	int i,j,q;
+	memset(sieve,1,sizeof(sieve));
+	q=sqrt(MAXP);
+	for(sieve[0]=sieve[1]=0,i=2;i<=q;i++) if(sieve[i]) for(j=i*i;j<MAXP;j+=i) sieve[j]=0;
 }
 
-/* start of elliptic curve method! implementation based on "factorization and
-   primality testing" (bressaud) */
+void genprimes() {
+	int i;
+	for(primes=i=0;i<MAXP;i++) if(sieve[i]) prime[primes++]=i;
+}
+
+/* start of ECM routines */
 
 /* helpful parameters for ECM (B1, number of curves)
    http://www.alpertron.com.ar/ECM.HTM
 */
 
-void sub_2i(mpz_t r,mpz_t s,mpz_t n,mpz_t a,mpz_t b,mpz_t X2,mpz_t Z2) {
-	mpz_t t,u,v;
-	mpz_init(t); mpz_init(u); mpz_init(v);
-	/* calculate X2 */
-	mpz_mul(t,r,r); mpz_mul(u,s,s); mpz_mul(u,u,a);
-	mpz_sub(t,t,u); mpz_mod(t,t,n);
-	mpz_mul(t,t,t);
-	mpz_pow_ui(u,s,3); mpz_mul(u,u,r); mpz_mul(u,u,b); mpz_mul_ui(u,u,8);
-	mpz_sub(t,t,u); mpz_mod(v,t,n);
-	/* calculate Z2 */
-	mpz_pow_ui(t,r,3); mpz_mul(u,a,r); mpz_mul(u,u,s); mpz_mul(u,u,s);
-	mpz_add(t,t,u);
-	mpz_pow_ui(u,s,3); mpz_mul(u,u,b); mpz_add(t,t,u); mpz_mod(t,t,n);
-	mpz_mul(t,s,t); mpz_mul_ui(t,t,4); mpz_mod(Z2,t,n); mpz_set(X2,v);
-	mpz_clear(t); mpz_clear(u); mpz_clear(v);
+/* global variables for ECM */
+struct {
+	mpz_t n,C;
+	/* temp variables */
+	mpz_t t,t1,t2,t3,t4;
+	mpz_t U,V,T,W;
+} ecm;
+
+void addh(mpz_t X1,mpz_t Z1,mpz_t X2,mpz_t Z2,mpz_t X,mpz_t Z,mpz_t Xo,mpz_t Zo) {
+	/* Xo = Z*(X1*X2 - Z1*Z2)^2 */
+	mpz_mul(ecm.t1,X1,X2); mpz_submul(ecm.t1,Z1,Z2); mpz_mul(ecm.t1,ecm.t1,ecm.t1);
+	mpz_mul(ecm.t1,ecm.t1,Z);
+	/* Zo = X*(X1*Z2 - X2*Z1)^2 */
+	mpz_mul(ecm.t2,X1,Z2); mpz_submul(ecm.t2,X2,Z1); mpz_mul(ecm.t2,ecm.t2,ecm.t2);
+	mpz_mul(Zo,ecm.t2,X); mpz_mod(Zo,Zo,ecm.n);
+	mpz_mod(Xo,ecm.t1,ecm.n);
 }
 
-void sub_2i_plus(mpz_t r,mpz_t s,mpz_t u,mpz_t v,mpz_t X,mpz_t Z,mpz_t n,mpz_t a,mpz_t b,mpz_t U1,mpz_t U2) {
-	mpz_t t,t1,t2,u1;
-	mpz_init(t); mpz_init(t1); mpz_init(t2); mpz_init(u1);
-	/* obtain U1 */
-	mpz_mul(t1,r,u); mpz_mul(t,a,s); mpz_mul(t,t,v); mpz_sub(t1,t1,t); mpz_mod(t1,t1,n);
-	mpz_mul(t2,r,v); mpz_mul(t,s,u); mpz_add(t2,t2,t); mpz_mul(t2,t2,v);
-	mpz_mul(t2,t2,s); mpz_mul(t2,t2,b); mpz_mod(t2,t2,n);
-	mpz_mul(t1,t1,t1); mpz_mul_ui(t2,t2,4); mpz_sub(t1,t1,t2); mpz_mul(t1,t1,Z);
-	mpz_mod(u1,t1,n);
-	/* obtain U2 */
-	mpz_mul(t,u,s); mpz_mul(t1,r,v); mpz_sub(t,t,t1); mpz_mod(t,t,n);
-	mpz_mul(t,t,t); mpz_mul(t,t,X); mpz_mod(U2,t,n);
-	mpz_set(U1,u1);
-	mpz_clear(t); mpz_clear(t1); mpz_clear(t2); mpz_clear(u1);
+/* double X,Y and put result in X2,Z2 */
+void doubleh(mpz_t X,mpz_t Z,mpz_t X2,mpz_t Z2) {
+	/* t1=X*X, t2=Z*Z */
+	mpz_mul(ecm.t1,X,X); mpz_mul(ecm.t2,Z,Z);
+	/* Z2 = 4*Z*(X*X*X + C*X*X*Z + X*Z*Z), build inner stuff in t3 */
+	mpz_mul(ecm.t3,ecm.t1,X); mpz_mul(ecm.t4,ecm.t1,ecm.C); mpz_mul(ecm.t4,ecm.t4,Z);
+	mpz_add(ecm.t3,ecm.t3,ecm.t4); mpz_mul(ecm.t4,ecm.t2,X);
+	mpz_add(ecm.t3,ecm.t3,ecm.t4);
+	mpz_mul(ecm.t3,Z,ecm.t3); mpz_mul_ui(Z2,ecm.t3,4); mpz_mod(Z2,Z2,ecm.n);
+	/* X2=(X*X-Z*Z)^2 */
+	mpz_sub(X2,ecm.t1,ecm.t2); mpz_mul(X2,X2,X2); mpz_mod(X2,X2,ecm.n);
 }
 
-/* multiply (X,Z) with k in y^2=x^3+ax+b mod n */
-void nextvalues(mpz_t X,mpz_t Z,int p,mpz_t n,mpz_t a,mpz_t b) {
-	mpz_t X1,Z1,X2,Z2,U1,U2,t;
-	int len=0,c[32],i;
-	mpz_init(U1); mpz_init(U2); mpz_init(t);
-	mpz_init_set(X1,X); mpz_init_set(Z1,Z); mpz_init(X2); mpz_init(Z2);
-	while(p) c[len++]=p&1,p>>=1;
-	sub_2i(X,Z,n,a,b,X2,Z2);
-	/* len-1 or len-2? */
-	for(i=len-2;i>=0;i--) {
-		sub_2i_plus(X1,Z1,X2,Z2,X,Z,n,a,b,U1,U2);
-		if(!c[i]) {
-			sub_2i(X1,Z1,n,a,b,t,Z1);
-			mpz_set(X1,t); mpz_set(X2,U1); mpz_set(Z2,U2);
+void multiply(mpz_t X,mpz_t Z,int p,mpz_t X2,mpz_t Z2) {
+	int b;
+	if(p<2) puts("error not implemented"),exit(0);
+	if(p==2) return doubleh(X,Z,X2,Z2);
+	mpz_set(ecm.U,X); mpz_set(ecm.V,Z);
+	doubleh(X,Z,ecm.T,ecm.W);
+	for(b=30;;b--) if(p&(1<<b)) break;
+	for(b--;b>=0;b--) {
+		if(p&(1<<b)) {
+			addh(ecm.T,ecm.W,ecm.U,ecm.V,X,Z,ecm.U,ecm.V);
+			doubleh(ecm.T,ecm.W,ecm.T,ecm.W);
 		} else {
-			sub_2i(X2,Z2,n,a,b,t,Z2);
-			mpz_set(X2,t); mpz_set(X1,U1); mpz_set(Z1,U2);
+			addh(ecm.U,ecm.V,ecm.T,ecm.W,X,Z,ecm.T,ecm.W);
+			doubleh(ecm.U,ecm.V,ecm.U,ecm.V);
 		}
 	}
-	mpz_set(X,X1); mpz_set(Z,Z1);
-	mpz_clear(U1); mpz_clear(U2); mpz_clear(t);
-	mpz_clear(X1); mpz_clear(Z1); mpz_clear(X2); mpz_clear(Z2);
+	if(p&1) return addh(ecm.U,ecm.V,ecm.T,ecm.W,X,Z,X2,Z2);
+	doubleh(ecm.U,ecm.V,X2,Z2);
 }
 
-/* elliptic curve method! returns 1 and factor in out if factor is found,
-   otherwise return 0, maxb is max prime, maxc is number of curves to test */
-int ECM(mpz_t n,mpz_t out,int maxb,int maxc) {
-	int r=0,p;
-	mpz_t X,Y,Z,a,b,g,t;
-	mpz_init(X); mpz_init(Y); mpz_init(Z); mpz_init(a); mpz_init(b); mpz_init(g); mpz_init(t);
-	gmp_printf("start ecm on %Zd with b1 %d curves %d\n",n,maxb,maxc);
+#define D 100
+
+/* faster ECM from "prime numbers - a computational perspective" (crandall,
+   pomerance), algorithm 7.4.4 */
+/* return 1 and factor in out if factor is found, otherwise return 0.
+   B1 is max prime (must be even), maxc is number of curves to test */
+int ECM(mpz_t n,mpz_t out,int B1,int maxc) {
+	long long q;
+	int r=0,B2=100*B1,i,B,j,delta;
+	mpz_t sigma,u,v,Qx,Qz,g,t,t1;
+	mpz_t Sx[D],Sz[D],beta[D],Tx,Tz,Rx,Rz,alpha;
+	mpz_init(t); mpz_init(t1);
+	mpz_init(sigma); mpz_init(u); mpz_init(v); mpz_init(Qx); mpz_init(Qz); mpz_init(g);
+	/* global variables */
+	mpz_init_set(ecm.n,n); mpz_init(ecm.C);
+	mpz_init(ecm.U); mpz_init(ecm.V); mpz_init(ecm.T); mpz_init(ecm.W);
+	mpz_init(ecm.t); mpz_init(ecm.t1); mpz_init(ecm.t2); mpz_init(ecm.t3);
 	while(maxc--) {
-	newcurve:
-		/* pick random curve */
-		mpz_urandomm(X,gmprand,n); mpz_urandomm(Y,gmprand,n); mpz_urandomm(a,gmprand,n);
-		/* determine b=(y^2-x^3-ax)%n */
-		mpz_mul(b,Y,Y); mpz_pow_ui(t,X,3); mpz_sub(b,b,t);
-		mpz_mul(t,a,X); mpz_sub(b,b,t); mpz_mod(b,b,n);
-//		gmp_printf("curve a %Zd\n      b %Zd\n      x %Zd\n      y %Zd\n",a,b,X,Y);
-		/* check gcd(4a^3+27b^2,n) */
-		mpz_pow_ui(g,a,3); mpz_mul_si(g,g,4); mpz_mul(t,b,b);
-		mpz_mul_si(t,t,27); mpz_add(g,g,t); mpz_gcd(g,g,n);
-		if(!mpz_cmp(g,n)) goto newcurve;
-		if(mpz_cmp_ui(g,1)>0) {
-			/* factor found! */
-			r=1;
-			mpz_set(a,g);
-			goto end;
+		/* choose random curve */
+		do {
+			mpz_urandomm(sigma,gmprand,n); /* sigma between 6 and n-1 */
+		} while(mpz_cmp_si(sigma,6)<0);
+		/* u=(sigma^2-5) mod n */
+		mpz_mul(u,sigma,sigma); mpz_sub_ui(u,u,5); mpz_mod(u,u,n);
+		/* v=4*sigma mod n */
+		mpz_mul_si(v,sigma,4); mpz_mod(v,v,n);
+		/* C=((u-v)^3)(3u+v)/(4u^3v)-2) mod n */
+		mpz_sub(t,v,u); mpz_powm_ui(t,t,3,n);
+		mpz_mul_ui(t1,u,3); mpz_add(t1,t1,v); mpz_mul(t,t,t1); mpz_mod(t,t,n);
+		mpz_powm_ui(t1,u,3,n); mpz_mul(t1,t1,v); mpz_mul_si(t1,t1,4); mpz_mod(t1,t1,n);
+		mpz_invert(t1,t1,n); mpz_mul(t,t,t1); mpz_sub_ui(t,t,2); mpz_mod(ecm.C,t,n);
+		/* Qx=u^3 mod n, Qy=v^3 mod n */
+		mpz_powm_ui(Qx,u,3,n); mpz_powm_ui(Qz,v,3,n);
+		/* perform stage 1 */
+		for(j=0;j<primes && prime[j]<B1;j++) {
+			for(q=1;q<=B1;q*=prime[j]) multiply(Qx,Qz,prime[j],Qx,Qz);
 		}
-		mpz_set_ui(Z,1);
-		for(p=2;p<=maxb;p++) {
-			nextvalues(X,Z,p,n,a,b);
-			if(!(p&15)) {
-				mpz_gcd(g,Z,n);
-				if(!mpz_cmp(g,n)) goto fail;
-				if(mpz_cmp_ui(g,1)>0) {
-					r=1;
-					mpz_set(out,g);
-					goto end;
-				}
-			}
-		}
-		/* loop done, check again */
-		mpz_gcd(g,Z,n);
-		if(mpz_cmp_ui(g,1)>0) {
+		mpz_gcd(g,Qz,n);
+		if(mpz_cmp_ui(g,1)>0 && mpz_cmp(g,n)<0) {
 			r=1;
 			mpz_set(out,g);
 			goto end;
 		}
-	fail:;
+		/* perform stage 2 */
+		for(i=0;i<D;i++) mpz_init(Sx[i]),mpz_init(Sz[i]),mpz_init(beta[i]);
+		mpz_init(Tx); mpz_init(Tz); mpz_init(Rx); mpz_init(Rz); mpz_init(alpha);
+		doubleh(Qx,Qz,Sx[0],Sz[0]);
+		doubleh(Sx[0],Sz[0],Sx[1],Sz[1]);
+		for(i=1;i<=D;i++) {
+			if(i>2) addh(Sx[i-2],Sz[i-2],Sx[0],Sz[0],Sx[i-3],Sz[i-3],Sx[i-1],Sz[i-1]);
+			mpz_mul(beta[i-1],Sx[i-1],Sz[i-1]); mpz_mod(beta[i-1],beta[i-1],n);
+		}
+		mpz_set_ui(g,1);
+		B=B1-1;
+		multiply(Qx,Qz,B-2*D,Tx,Tz);
+		multiply(Qx,Qz,B,Rx,Rz);
+		for(i=B;i<B2;i+=2*D) {
+			mpz_mul(alpha,Rx,Rz); mpz_mod(alpha,alpha,n);
+			for(;j<primes && prime[j]<=i+2*D;j++) {
+				delta=(prime[j]-i)/2-1;
+				if(delta>=D || delta<0) printf("error p %d i %d delta %d error\n",prime[j],i,delta),exit(0);
+				/* g = g*( (Rx-Sx[delta])*(Rz+Sz[delta])-alpha+beta[delta]) mod n */
+				mpz_sub(t,Rx,Sx[delta]); mpz_add(t1,Rz,Sz[delta]);
+				mpz_mul(t,t1,t1); mpz_sub(t,t,alpha); mpz_add(t,t,beta[delta]);
+				mpz_mul(g,g,t); mpz_mod(g,g,n);
+			}
+			addh(Rx,Rz,Sx[D-1],Sz[D-1],Tx,Tz,t,t1);
+			mpz_set(Tx,Rx); mpz_set(Tz,Rz); mpz_set(Rx,t); mpz_set(Rz,t1);
+		}
+		mpz_gcd(g,g,n);
+		if(mpz_cmp_ui(g,1)>0 && mpz_cmp(g,n)<0) r=1,mpz_set(out,g);
+		for(i=0;i<D;i++) mpz_clear(Sx[i]),mpz_clear(Sz[i]),mpz_clear(beta[i]);
+		mpz_clear(Tx); mpz_clear(Tz); mpz_clear(Rx); mpz_clear(Rz); mpz_clear(alpha);
+		if(r) goto end;
 	}
 end:
-	mpz_clear(X); mpz_clear(Z); mpz_clear(a); mpz_clear(b); mpz_clear(g); mpz_clear(t);
+	mpz_clear(ecm.n); mpz_clear(ecm.C);
+	mpz_clear(ecm.t); mpz_clear(ecm.t1); mpz_clear(ecm.t2); mpz_clear(ecm.t3);
+	mpz_clear(ecm.U); mpz_clear(ecm.V); mpz_clear(ecm.T); mpz_clear(ecm.W);
+	mpz_clear(sigma); mpz_clear(u); mpz_clear(v); mpz_clear(Qx); mpz_clear(Qz); mpz_clear(g);
+	mpz_clear(t); mpz_clear(t1);
 	return r;
 }
+#undef D
 
 /* pollard p-1 with stage 2 with large prime. hope that n has a factor p such
    that p-1 is B1-smooth with at most one factor larger than B1 and not larger
@@ -192,7 +235,7 @@ int pollardp1(mpz_t n,mpz_t a,int B1,int B2,int maxc) {
 		}
 		/* stage 2! for each prime p between B1 and B2, check p*m */
 		if(!(b&1)) b++;
-		for(q=0;b<=B2;b+=2) if(isprime(b)) {
+		for(q=0;b<=B2;b+=2) if(sieve[b]) {
 			mpz_powm_ui(m,m,b-q,n); q=b;
 			mpz_sub_ui(g,m,1);
 			mpz_gcd(g,g,n);
@@ -279,20 +322,18 @@ void factorize2(mpz_t n) {
 		mpz_clear(m);
 		return;
 	}
-	/* always try pollard p-1 */
+	/* always try pollard p-1 and ecm interleaved */
 	mpz_init(m);
-	if(pollardp1(n,m,500000,500000,2)) {
-		factorize2(m);
-		mpz_divexact(m,n,m);
-		factorize2(m);
-		mpz_clear(m);
-		return;
-	}
-	/* ecm */
+	if(pollardp1(n,m,500000,500000,2)) goto found;
 	if(ECM(n,m,2000,25)) goto found;
 	if(ECM(n,m,11000,90)) goto found;
 	if(ECM(n,m,50000,300)) goto found;
-	if(ECM(n,m,250000,300)) goto found;
+	if(pollardp1(n,m,1000000,5000000,2)) goto found;
+	if(ECM(n,m,250000,700)) goto found;
+	if(ECM(n,m,1000000,1800)) goto found;
+	/* TODO strategy:
+	   for "small" numbers, run qs immediately (<50 digits?)
+	   otherwise, run ECM before QS, the larger the number the more ECM. */
 	goto wrong;
 found:
 	factorize2(m);
@@ -412,6 +453,8 @@ int main() {
 	mpz_t r;
 	mpz_init(r);
 	gmp_randinit_mt(gmprand);
+	createsieve();
+	genprimes();
 	for(i=0;i<MAXF;i++) mpz_init(factors[i]);
 	puts("1 2"); /* wrong term */
 	for(i=2;;i++) {
