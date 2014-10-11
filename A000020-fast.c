@@ -125,11 +125,10 @@ end:
 }
 
 /* number of extra relations in linear algebra */
-#define EXTRAREL 20
+#define EXTRAREL 10
 /* cache block, experiment with this */
 #define BLOCKSIZE 30000
 /* slack in logarithm for trial division */
-#define LGSLACK 13
 
 /* global variables for quadratic sieve */
 struct {
@@ -145,12 +144,14 @@ struct {
 	short sieve[BLOCKSIZE]; /* the sieve */
 	mpz_t *rel;             /* smooth numbers */
 	int rn;                 /* number of smooth numbers */
+	int LGSLACK;            /* lg slack to accept for trial division */
 	/* matrix */
 	unsigned long long **m;
 	/* final assembly */
 	int *ev;                /* cumulative exponent vector */
 } qs;
 
+#define SETBITVAL(a,b,v) qs.m[(a)][(b)>>6]=(qs.m[(a)][(b)>>6]&~(1ULL<<((b)&63)))|((v>0)<<((b)&63))
 #define SETBIT(a,b) qs.m[(a)][(b)>>6]|=(1ULL<<((b)&63))
 #define CLRBIT(a,b) qs.m[(a)][(b)>>6]&=~(1ULL<<((b)&63))
 #define XORBIT(a,b) qs.m[(a)][(b)>>6]^=(1ULL<<((b)&63))
@@ -208,7 +209,7 @@ void QSgenfactorbase() {
 	for(i=0;i<qs.fn;i++) if(!(qs.m[i]=calloc(((qs.fn+EXTRAREL+63)/64),sizeof(unsigned long long)))) puts("out of memory"),exit(1);
 	qs.fn=0;
 	qs.p[qs.fn++]=-1;
-	qs.p[qs.fn++]=2;
+	qs.p[qs.fn]=2; qs.lg[qs.fn]=1; qs.a[qs.fn++]=1;
 	for(i=1;i<primes && prime[i]<qs.B;i++) {
 		mpz_set_ui(t,prime[i]);
 		if(mpz_jacobi(qs.n,t)>0) {
@@ -219,6 +220,7 @@ void QSgenfactorbase() {
 			qs.fn++;
 		}
 	}
+	printf("  factor base bound %d primes %d\n",qs.B,qs.fn);
 	mpz_clear(t);
 }
 
@@ -236,7 +238,7 @@ void QStrialdiv(mpz_t start,int dir) {
 	mpz_sub(t,t,qs.n);
 	mpz_abs(t,t);
 	lim=0.5+log(mpz_get_d(t))/log(2);
-	for(i=0;i<BLOCKSIZE;i++) if(qs.sieve[i]>=lim-LGSLACK) {
+	for(i=0;i<BLOCKSIZE;i++) if(qs.sieve[i]>=lim-qs.LGSLACK) {
 		mpz_set(t,start);
 		mpz_add_ui(t,t,i);
 		mpz_mul(t,t,t);
@@ -278,6 +280,7 @@ void QStrialdiv(mpz_t start,int dir) {
 			mpz_add_ui(qs.rel[qs.rn],qs.rel[qs.rn],i);
 			qs.rn++;
 			correct++;
+//			gmp_printf("add smooth %Zd %d/%d sieve-lg %d lim %d\n",t2,qs.rn,qs.fn+EXTRAREL,qs.sieve[i],lim);
 		} else {
 			/* factorization failed, clear vector */
 			for(j=0;j<qs.fn;j++) CLRBIT(j,qs.rn);
@@ -319,6 +322,7 @@ void QSsieve() {
 	}
 	/* sieve! */
 	correct=false=sieves=0;
+	printf("  ");
 	do {
 		/* forward */
 		for(i=0;i<BLOCKSIZE;i++) qs.sieve[i]=0;
@@ -356,7 +360,9 @@ void QSsieve() {
 		if(qs.rn<qs.fn+EXTRAREL) QStrialdiv(xback,-1);
 		mpz_sub_ui(xback,xback,BLOCKSIZE);
 		sieves++;
+		if(sieves%1000000==0) printf("[%d] ",qs.rn);
 	} while(qs.rn<qs.fn+EXTRAREL);
+	printf("%d rel %d fail trial division %d sieve blocks\n",correct,false,sieves);
 	free(pfrontp); free(pfrontm); free(pbackp); free(pbackm);
 	mpz_clear(xfront); mpz_clear(xback); mpz_clear(t);
 }
@@ -410,7 +416,7 @@ int QSroot(mpz_t a) {
 	char *freevar,*v;
 	mpz_t x,y;
 	mpz_init(x); mpz_init(y);
-	if(!(qs.ev=malloc(sizeof(int)*qs.rn))) puts("out of memory"),exit(1);
+	if(!(qs.ev=malloc(sizeof(int)*qs.fn))) puts("out of memory"),exit(1);
 	/* find all free variables. variable i is free if there is no row having
 	   its first 1-element in column i */
 	if(!(freevar=malloc(qs.rn))) puts("out of memory"),exit(1);
@@ -422,7 +428,7 @@ int QSroot(mpz_t a) {
 			break;
 		}
 	}
-	for(f=0;f<qs.fn;f++) if(freevar[f]) {
+	for(f=0;f<qs.rn;f++) if(freevar[f]) {
 		tried++;
 		/* set free variable i to 1 and the others to 0 */
 		for(i=0;i<qs.rn;i++) v[i]=i==f;
@@ -439,13 +445,13 @@ int QSroot(mpz_t a) {
 		mpz_set_ui(x,1);
 		for(i=0;i<qs.rn;i++) if(v[i]) mpz_mul(x,x,qs.rel[i]),mpz_mod(x,x,qs.n);
 		/* take square root of right side, the product of (x^2-n) */
-		for(i=0;i<qs.rn;i++) qs.ev[i]=0;
+		for(i=0;i<qs.fn;i++) qs.ev[i]=0;
 		/* we didn't want to spend lots of memory storing the factorization of
 		   each x^2-n, so trial divide again */
 		for(i=0;i<qs.rn;i++) if(v[i]) QSbuildev(qs.rel[i]);
 		mpz_set_ui(y,1);
 		/* multiply half the exponents */
-		for(i=0;i<qs.rn;i++) for(j=0;j<qs.ev[i];j+=2) {
+		for(i=0;i<qs.fn;i++) for(j=0;j<qs.ev[i];j+=2) {
 			mpz_mul_si(y,y,qs.p[i]);
 			mpz_mod(y,y,qs.n);
 		}
@@ -454,6 +460,7 @@ int QSroot(mpz_t a) {
 		mpz_gcd(x,x,qs.n);
 		if(mpz_cmp_ui(x,1)>0 && mpz_cmp(x,qs.n)<0) {
 			mpz_set(a,x);
+			printf("  found factor after %d nullvectors\n",tried);
 			r=1;
 			break;
 		}
@@ -469,9 +476,15 @@ int QSroot(mpz_t a) {
 /* warning, don't invoke on even numbers or powers, or on very small numbers */
 int QS(mpz_t n,mpz_t a) {
 	double L=mpz_get_d(n);
-	int r,i;
+	int r,i,d=mpz_sizeinbase(n,10);
 	/* the multiplier is tweakable! */
-	qs.B=(int)exp(0.5*sqrt(log(L)*log(log(L))))*1.9;
+	qs.B=(int)exp(0.5*sqrt(log(L)*log(log(L))));
+	if(d<=50) qs.B*=1.4;
+	else if(d>=68) qs.B*=0.9;
+	else qs.B*=1.4-((d-50)/18*0.5);
+	/* the following formula of LGSLACK found by experimentation */
+	qs.LGSLACK=13;
+	if(d>=33) qs.LGSLACK+=(d-33)/7;
 	mpz_init_set(qs.n,n);
 	QSgenfactorbase();
 	QSsieve();
@@ -771,7 +784,7 @@ found:
 	return;
 wrong:
 //	gmp_printf("TODO large number (%d digits)\n",d);
-	gmp_printf("%Zd\n",n,d);
+	gmp_printf("%Zd d\n",n,d);
 	if(fn==MAXF) ERROR;
 	mpz_set(factors[fn++],n);
 }
