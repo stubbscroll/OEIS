@@ -2,7 +2,7 @@
    except for the erroneous a(1)=2.
    formula: phi(2^n-1)/n.
    algorithm: start with N=2^n-1. we have that when d|n, 2^d-1|2^n-1.
-   for all d|n, factorize gcd(N,2^d-1) and let N=gcd(N,2^d-1).
+   for all d|n, factorize gcd(N,2^d-1) and let N=gcd(N,2^d-1) after each step.
    if n is prime, then all prime factors must be of the form 2kn+1 for
    integer k>=1 and must also be 1 or 7 mod 8.
    the following factorization algorithms are tried in order:
@@ -10,12 +10,13 @@
    - pollard-rho
    - pollard p-1
    - elliptic curve method (speed is roughly 66% of alpertron, i think)
-   - quadratic sieve (simple variant)
-   - (more to come later, qs will be improved)
-   - (maybe also add a check for primes of the form 2kn+1)
+   - quadratic sieve (simple variant with one large prime)
+   * (maybe also add a check for primes of the form 2kn+1)
    then process the list of prime factors and calculate phi.
-   this is very tunable. ecm is much slower than the other methods, so
+   this is very tunable. ecm is much slower than the other methods, so i guess
    pollard-rho and p-1 could be given more time.
+   good up to a(292), didn't calculate a(293) because it needs to factorize a
+   89 digit composite.
 */
 
 #include <stdio.h>
@@ -25,7 +26,7 @@
 #include <gmp.h>
 
 /* limit for trial division */
-#define SMALL 1000000
+#define SMALL 100000000
 
 /* limit (number of digits) for pollard-rho. lowered because QS is fast */
 #define POLLARDLIM 30
@@ -42,11 +43,11 @@ gmp_randstate_t gmprand;
 
 /* misc routines, such as sieve */
 
-#define MAXP 100000000
+#define MAXP 120000000
 typedef long long ll;
 
 char sieve[MAXP];
-int prime[5761456];
+int prime[6841700];
 int primes;
 
 void createsieve() {
@@ -62,6 +63,18 @@ void genprimes() {
 }
 
 /* start of quadratic sieve! */
+
+void mpz_set_ull(mpz_t m,unsigned long long a) {
+	mpz_import(m,1,-1,sizeof(unsigned long long),0,0,&a);
+}
+
+/* WARNING, don't call on m > maxull */
+/* TODO check for m > maxull */
+ll mpz_get_ull(mpz_t m) {
+	long long r;
+	mpz_export(&r,0,-1,sizeof(long long),0,0,m);
+	return r;
+}
 
 unsigned int powmod(unsigned int n,unsigned int k,unsigned int mod) {
 	unsigned int ans=1;
@@ -125,31 +138,85 @@ end:
 }
 
 /* number of extra relations in linear algebra */
-#define EXTRAREL 10
+#define EXTRAREL 20
 /* cache block, experiment with this */
 #define BLOCKSIZE 30000
-/* slack in logarithm for trial division */
+
+/* structures for partial relations */
+struct partial2_s {
+	mpz_t rel;               /* smooth number with one large prime */
+	unsigned long long *v;   /* exponent vector mod 2 (only factor base primes) */
+};
+
+struct partial_s {
+	long long p;             /* large prime */
+	int p2ix;                /* index into partial array */
+};
 
 /* global variables for quadratic sieve */
 struct {
 	/* basic info */
-	mpz_t n;                /* number to factorize */
+	mpz_t n;                 /* number to factorize */
 	/* factor base */
-	int B;                  /* factor base bound */
-	int *p;                 /* primes in factor base */
-	int *a;                 /* root of n mod p */
-	int *lg;                /* integer logarithm base 2 */
-	int fn;                 /* number of primes in factor base */
-	/* sieve */
-	short sieve[BLOCKSIZE]; /* the sieve */
-	mpz_t *rel;             /* smooth numbers */
-	int rn;                 /* number of smooth numbers */
-	int LGSLACK;            /* lg slack to accept for trial division */
+	int B1;                  /* upper bound for primes in factor base */
+	long long B2;            /* upper bound for large prime */
+	mpz_t Big2;              /* large prime bound as bigint */
+	int LGSLACK;             /* base-2 log slack to accept for trial division */
+	int *p;                  /* primes in factor base */
+	int *a;                  /* root of n mod p */
+	int *lg;                 /* integer logarithm base 2 */
+	int fn;                  /* number of primes in factor base */
+	/* full relations */
+	short sieve[BLOCKSIZE];  /* the sieve */
+	mpz_t *rel;              /* smooth numbers, this includes the "first half" of
+	                            merged partial relations (actually not the smooth
+	                            number itself, but the x resulting in x^2-n) */
+	int rn;                  /* number of relations */
+	int frn;                 /* number of full relations */
+	/* partial relations */
+	struct partial_s *part;  /* partial relations, can be sorted, points into
+	                            part2 where most of the actual data is */
+	struct partial2_s *part2;/* partial relations: smooth number (with large
+	                            prime) and exponent vector */
+	int prn;                 /* number of partial relations */
+	int maxprn;              /* number of partial relations allocated */
+	/* merged partial relations consist of 2 almost smooth numbers. the first is
+	   in *rel[i], the other is *rel2[i-f] where f is the number of full
+	   relations. */
+	mpz_t *rel2;             /* smooth numbers, second half of merged partial
+	                            relations (actually, the x giving x^2-n) */
+	mpz_t *lp;               /* common large prime of merged relation */
+	/* hash table for counting occurrences of large primes */
+	long long *hkey;         /* keys (large prime) in hash table */
+	/* TODO consider making hcount uchar if memory use becomes significant */
+	int *hcount;             /* value (count) in hash table */
+	long long maxhash;       /* number of elements in hash table */
+	int mcnt;                /* number of relations formed from partials */
 	/* matrix */
 	unsigned long long **m;
 	/* final assembly */
-	int *ev;                /* cumulative exponent vector */
+	int *ev;                 /* cumulative exponent vector */
+	/* statz */
+	int false,sieves;        /* failed trial divisions, blocks sieved */
 } qs;
+
+/* find index in hash table for element key. if it doesn't exist, create it */
+long long QSgethash(long long key) {
+	long long ix=key%qs.maxhash;
+	while(qs.hkey[ix] && qs.hkey[ix]!=key) {
+		ix++;
+		if(ix==qs.maxhash) ix=0;
+	}
+	if(!qs.hkey[ix]) qs.hkey[ix]=key;
+	return ix;
+}
+
+int QScompp(const void *A,const void *B) {
+	const struct partial_s *a=A,*b=B;
+	if(a->p<b->p) return -1;
+	if(a->p>b->p) return 1;
+	return 0;
+}
 
 #define SETBITVAL(a,b,v) qs.m[(a)][(b)>>6]=(qs.m[(a)][(b)>>6]&~(1ULL<<((b)&63)))|((v>0)<<((b)&63))
 #define SETBIT(a,b) qs.m[(a)][(b)>>6]|=(1ULL<<((b)&63))
@@ -160,6 +227,7 @@ struct {
 /* gaussian elimination mod 2 on bitmasks, A is n*m, b is n*o */
 /* a is a malloced array of pointers, each a[i] is of size
    sizeof(unsigned long long)*(m+o+63)/64 */
+/* TODO optimize this later */
 /* return 0: no solutions, 1: one solution, 2: free variables */
 int bitgauss64(int n,int m,int o) {
 	int i,j,k,z=m+o,c=0,fri=0,bz=(z+63)>>6;
@@ -189,17 +257,17 @@ int bitgauss64(int n,int m,int o) {
 	return 1+fri;
 }
 
-void QSgenfactorbase() {
-	int i;
+int QSgenfactorbase() {
+	int i,j;
 	mpz_t t;
 	mpz_init(t);
 	qs.fn=0;
 	/* generate factor base! p must be a quadratic residue of n */
-	for(qs.fn=2,i=1;i<primes && prime[i]<qs.B;i++) {
+	for(qs.fn=2,i=1;i<primes && prime[i]<qs.B1;i++) {
 		mpz_set_ui(t,prime[i]);
 		if(mpz_jacobi(qs.n,t)>0) qs.fn++;
 	}
-	/* allocate memory while we're at it */
+	/* allocate memory! */
 	if(!(qs.p=malloc(sizeof(int)*qs.fn))) puts("out of memory"),exit(1);
 	if(!(qs.a=malloc(sizeof(int)*qs.fn))) puts("out of memory"),exit(1);
 	if(!(qs.lg=malloc(sizeof(int)*qs.fn))) puts("out of memory"),exit(1);
@@ -210,9 +278,12 @@ void QSgenfactorbase() {
 	qs.fn=0;
 	qs.p[qs.fn++]=-1;
 	qs.p[qs.fn]=2; qs.lg[qs.fn]=1; qs.a[qs.fn++]=1;
-	for(i=1;i<primes && prime[i]<qs.B;i++) {
+	for(i=1;i<primes && prime[i]<qs.B1;i++) {
 		mpz_set_ui(t,prime[i]);
-		if(mpz_jacobi(qs.n,t)>0) {
+		j=mpz_jacobi(qs.n,t);
+		/* in the exceedingly rare event that the prime divides n: return factor */
+		if(!j) return prime[i];
+		if(j>0) {
 			qs.p[qs.fn]=prime[i];
 			/* find square root a = n (mod p) */
 			qs.a[qs.fn]=sqrtmod(mpz_fdiv_ui(qs.n,prime[i]),prime[i]);
@@ -220,15 +291,15 @@ void QSgenfactorbase() {
 			qs.fn++;
 		}
 	}
-	printf("  factor base bound %d primes %d\n",qs.B,qs.fn);
+	printf("  factor base bound %d primes %d\n",qs.B1,qs.fn);
 	mpz_clear(t);
+	return 0;
 }
-
-int correct,false,sieves;
 
 /* dir: 1 if positive x^2-n, -1 if negative */
 void QStrialdiv(mpz_t start,int dir) {
 	mpz_t t,t1,t2;
+	long long big,ix,iy;
 	int lim,i,j,lo,hi,mid,k;
 	mpz_init_set(t,start); mpz_init(t1); mpz_init(t2);
 	/* find lowest value in interval */
@@ -248,6 +319,7 @@ void QStrialdiv(mpz_t start,int dir) {
 		if(mpz_cmp_ui(t,0)<0) SETBIT(0,qs.rn);
 		mpz_abs(t,t);
 		for(j=1;j<qs.fn;j++) {
+			/* break if remainder < next prime^2 */
 			if(qs.p[j]<46340) {
 				if(mpz_cmp_ui(t,qs.p[j]*qs.p[j])<0) break;
 			} else {
@@ -274,26 +346,66 @@ void QStrialdiv(mpz_t start,int dir) {
 			if(lo<0 || lo>=qs.fn) printf("lo %d out of bounds\n",lo);
 			XORBIT(lo,qs.rn);
 			mpz_set_ui(t,1);
+		} else if(mpz_cmp_ui(t,1)>0 && mpz_cmp(t,qs.Big2)<1) {
+			/* the remainder is a large prime within our B2 bounds */
+			if(qs.prn==qs.maxprn) puts("ERROR, exhausted large prime storage"),exit(1);
+			big=mpz_get_ull(t);
+			qs.part[qs.prn].p2ix=qs.prn;
+			qs.part[qs.prn].p=big;
+			mpz_init_set(qs.part2[qs.prn].rel,start);
+			mpz_add_ui(qs.part2[qs.prn].rel,start,i);
+			if(!(qs.part2[qs.prn].v=calloc((qs.fn+63)/64,sizeof(unsigned long long)))) puts("out of memory"),exit(1);
+			for(j=0;j<qs.fn;j++) if(ISSET(j,qs.rn)) qs.part2[qs.prn].v[j>>6]|=(1ULL<<(j&63));
+			qs.prn++;
+			/* update count */
+			if(++qs.hcount[QSgethash(big)]>1) qs.mcnt++;
+			/* don't set t to 1 to invoke fail routine on purpose */
 		}
 		if(!mpz_cmp_ui(t,1)) {
 			mpz_set(qs.rel[qs.rn],start);
 			mpz_add_ui(qs.rel[qs.rn],qs.rel[qs.rn],i);
 			qs.rn++;
-			correct++;
-//			gmp_printf("add smooth %Zd %d/%d sieve-lg %d lim %d\n",t2,qs.rn,qs.fn+EXTRAREL,qs.sieve[i],lim);
 		} else {
 			/* factorization failed, clear vector */
 			for(j=0;j<qs.fn;j++) CLRBIT(j,qs.rn);
-			false++;
+			qs.false++;
 		}
-		if(qs.rn==qs.fn+EXTRAREL) break;
+		/* break if we have enough relations */
+		if(qs.rn+qs.mcnt==qs.fn+EXTRAREL) {
+			/* if we have enough partial relations, merge them and end sieving */
+			if(qs.mcnt) {
+				/* sort on largest prime */
+				qsort(qs.part,qs.prn,sizeof(qs.part[0]),QScompp);
+				/* allocate storage for merged smooth numbers */
+				if(!(qs.rel2=malloc(qs.mcnt*sizeof(mpz_t)))) puts("out of memory"),exit(1);
+				if(!(qs.lp=malloc(qs.mcnt*sizeof(mpz_t)))) puts("out of memory"),exit(1);
+				for(i=0;i<qs.mcnt;i++) mpz_init(qs.rel2[i]),mpz_init(qs.lp[i]);
+				i=qs.rn;
+				/* for each prime with count>=2: merge 0-1, 0-2, ..., 0-(cnt-1) */
+				for(ix=0;ix<qs.prn;) {
+					for(iy=ix+1;iy<qs.prn && qs.part[ix].p==qs.part[iy].p;iy++) {
+						/* merge ix and iy */
+						mpz_set(qs.rel[i],qs.part2[qs.part[ix].p2ix].rel);
+						mpz_set(qs.rel2[i-qs.rn],qs.part2[qs.part[iy].p2ix].rel);
+						mpz_set_ull(qs.lp[i-qs.rn],qs.part[ix].p);
+						for(j=0;j<qs.fn;j++) if(qs.part2[qs.part[ix].p2ix].v[j>>6]&(1ULL<<(j&63)))
+							XORBIT(j,i);
+						for(j=0;j<qs.fn;j++) if(qs.part2[qs.part[iy].p2ix].v[j>>6]&(1ULL<<(j&63)))
+							XORBIT(j,i);
+						i++;
+					}
+					ix=iy;
+				}
+			}
+			/* adjust the meaning of some variables... */
+			qs.frn=qs.rn;
+			qs.rn+=qs.mcnt;
+			break;
+		}
 	}
 	mpz_clear(t); mpz_clear(t1); mpz_clear(t2);
 }
 
-/* TODO possible improvements: calculate pfrontm from pfrontp (same with
-   pback) and eliminate the 2 m-arrays and trade memory access for
-   calculation */
 void QSsieve() {
 	int *pfrontp,*pfrontm,*pbackp,*pbackm;
 	int i;
@@ -321,7 +433,7 @@ void QSsieve() {
 		if(pfrontm[i]<0) printf("error");
 	}
 	/* sieve! */
-	correct=false=sieves=0;
+	qs.false=qs.sieves=0;
 	printf("  ");
 	do {
 		/* forward */
@@ -339,7 +451,7 @@ void QSsieve() {
 			pfrontm[i]-=BLOCKSIZE;
 		}
 		/* find smooth numbers (positive) */
-		if(qs.rn<qs.fn+EXTRAREL) QStrialdiv(xfront,1);
+		if(qs.rn+qs.mcnt<qs.fn+EXTRAREL) QStrialdiv(xfront,1);
 		mpz_add_ui(xfront,xfront,BLOCKSIZE);
 		/* backward */
 		if(mpz_cmp_ui(xback,0)<0) continue;
@@ -359,10 +471,10 @@ void QSsieve() {
 		/* find smooth numbers (negative) */
 		if(qs.rn<qs.fn+EXTRAREL) QStrialdiv(xback,-1);
 		mpz_sub_ui(xback,xback,BLOCKSIZE);
-		sieves++;
-		if(sieves%1000000==0) printf("[%d] ",qs.rn);
-	} while(qs.rn<qs.fn+EXTRAREL);
-	printf("%d rel %d fail trial division %d sieve blocks\n",correct,false,sieves);
+		qs.sieves++;
+		if(qs.sieves%1000000==0) printf("[%d] ",qs.rn);
+	} while(qs.rn+qs.mcnt<qs.fn+EXTRAREL);
+	printf("%d fr %d pr %d mr %d fail trial division %d sieve blocks\n",qs.rn,qs.prn,qs.rn-qs.frn,qs.false,qs.sieves);
 	free(pfrontp); free(pfrontm); free(pbackp); free(pbackm);
 	mpz_clear(xfront); mpz_clear(xback); mpz_clear(t);
 }
@@ -403,7 +515,7 @@ void QSbuildev(mpz_t x) {
 		mpz_set_ui(t,1);
 		qs.ev[lo]++;
 	}
-	if(mpz_cmp_ui(t,1)) {
+	if(mpz_cmp(t,qs.Big2)>=0) {
 		gmp_printf("sanity error, remaining factor %Zd\n",t);
 		exit(1);
 	}
@@ -414,8 +526,8 @@ void QSbuildev(mpz_t x) {
 int QSroot(mpz_t a) {
 	int i,j,k,r=0,f,tried=0;
 	char *freevar,*v;
-	mpz_t x,y;
-	mpz_init(x); mpz_init(y);
+	mpz_t x,y,t;
+	mpz_init(x); mpz_init(y); mpz_init(t);
 	if(!(qs.ev=malloc(sizeof(int)*qs.fn))) puts("out of memory"),exit(1);
 	/* find all free variables. variable i is free if there is no row having
 	   its first 1-element in column i */
@@ -443,18 +555,24 @@ int QSroot(mpz_t a) {
 		/* v[i]=1 means that i-th relation is part of the solution */
 		/* take square root of left side, the product of x^2 */
 		mpz_set_ui(x,1);
-		for(i=0;i<qs.rn;i++) if(v[i]) mpz_mul(x,x,qs.rel[i]),mpz_mod(x,x,qs.n);
+		for(i=0;i<qs.rn;i++) if(v[i]) {
+			mpz_mul(x,x,qs.rel[i]),mpz_mod(x,x,qs.n);
+			if(i>=qs.frn) mpz_mul(x,x,qs.rel2[i-qs.frn]);
+		}
 		/* take square root of right side, the product of (x^2-n) */
 		for(i=0;i<qs.fn;i++) qs.ev[i]=0;
 		/* we didn't want to spend lots of memory storing the factorization of
 		   each x^2-n, so trial divide again */
 		for(i=0;i<qs.rn;i++) if(v[i]) QSbuildev(qs.rel[i]);
+		for(i=0;i<qs.rn-qs.frn;i++) if(v[i+qs.frn]) QSbuildev(qs.rel2[i]);
 		mpz_set_ui(y,1);
 		/* multiply half the exponents */
 		for(i=0;i<qs.fn;i++) for(j=0;j<qs.ev[i];j+=2) {
 			mpz_mul_si(y,y,qs.p[i]);
 			mpz_mod(y,y,qs.n);
 		}
+		/* multiply in the large primes */
+		for(i=0;i<qs.rn-qs.frn;i++) if(v[i+qs.frn]) mpz_mul(y,y,qs.lp[i]),mpz_mod(y,y,qs.n);
 		/* get factor */
 		mpz_sub(x,x,y);
 		mpz_gcd(x,x,qs.n);
@@ -468,32 +586,64 @@ int QSroot(mpz_t a) {
 	free(v);
 	free(freevar);
 	free(qs.ev);
-	mpz_clear(x); mpz_clear(y);
+	mpz_clear(x); mpz_clear(y); mpz_clear(t);
 	return r;
 }
 
 /* quadratic sieve! */
-/* warning, don't invoke on even numbers or powers, or on very small numbers */
+/* warning, don't invoke on even integers or powers */
 int QS(mpz_t n,mpz_t a) {
-	double L=mpz_get_d(n);
-	int r,i,d=mpz_sizeinbase(n,10);
-	/* the multiplier is tweakable! */
-	qs.B=(int)exp(0.5*sqrt(log(L)*log(log(L))));
-	if(d<=50) qs.B*=1.4;
-	else if(d>=68) qs.B*=0.9;
-	else qs.B*=1.4-((d-50)/18*0.5);
+	double L=mpz_get_d(n),b1mul,b2mul=200;
+	int r,i,d=mpz_sizeinbase(n,10)-50;
+	if(d<0) d=0;
+	b1mul=0.9-d*0.02;
+	if(b1mul<0.4) b1mul=0.4;
+	qs.B1=(int)(b1mul*exp(0.5*sqrt(log(L)*log(log(L)))));
+	qs.B1+=100;
+	qs.B2=(long long)qs.B1*b2mul;
+	/* ensure that B2<B1*B1 */
+	if(qs.B2>(long long)qs.B1*qs.B1) qs.B2=(long long)qs.B1*qs.B1-1;
+	mpz_init(qs.Big2);
+	mpz_set_ull(qs.Big2,qs.B2);
 	/* the following formula of LGSLACK found by experimentation */
-	qs.LGSLACK=13;
-	if(d>=33) qs.LGSLACK+=(d-33)/7;
+	/* additional slack for large prime */
+	qs.LGSLACK=22+d*0.4;
+	/* allocate hash table. TODO measure fill degree later */
+	qs.maxhash=qs.B2/log(qs.B2)-qs.B1/log(qs.B1);
+	if(!(qs.hkey=calloc(qs.maxhash,sizeof(long long)))) puts("out of memory"),exit(1);
+	if(!(qs.hcount=calloc(qs.maxhash,sizeof(int)))) puts("out of memory"),exit(1);
+	qs.mcnt=0;
 	mpz_init_set(qs.n,n);
-	QSgenfactorbase();
+	if((i=QSgenfactorbase())) {
+		/* factor base prime divides n */
+		mpz_set_si(a,i);
+		r=1;
+		goto done;
+	}
+	qs.maxprn=qs.fn*20+10000; /* max number of partial relations */
+	qs.prn=0;
+	if(!(qs.part=malloc(qs.maxprn*sizeof(struct partial_s)))) puts("out of memory"),exit(1);
+	if(!(qs.part2=malloc(qs.maxprn*sizeof(struct partial2_s)))) puts("out of memory"),exit(1);
 	QSsieve();
 	bitgauss64(qs.fn,qs.rn,0);
 	r=QSroot(a);
-	for(i=0;i<qs.rn;i++) mpz_clear(qs.rel[i]);
+	/* dealloc stuff */
+	if(qs.mcnt) {
+		for(i=0;i<qs.mcnt;i++) mpz_clear(qs.rel2[i]),mpz_clear(qs.lp[i]);
+		free(qs.rel2); free(qs.lp);
+	}
+	for(i=0;i<qs.prn;i++) free(qs.part2[i].v);
+	for(i=0;i<qs.prn;i++) mpz_clear(qs.part2[i].rel);
+	free(qs.part2);
+	free(qs.part);
+done:
+	free(qs.hcount);
+	free(qs.hkey);
+	for(i=0;i<qs.fn+EXTRAREL;i++) mpz_clear(qs.rel[i]);
 	free(qs.p); free(qs.a); free(qs.lg); free(qs.rel);
 	for(i=0;i<qs.fn;i++) free(qs.m[i]);
 	free(qs.m);
+	mpz_clear(qs.Big2);
 	mpz_clear(qs.n);
 	return r;
 }
@@ -564,6 +714,7 @@ void multiply(mpz_t X,mpz_t Z,int p,mpz_t X2,mpz_t Z2) {
 int ECM(mpz_t n,mpz_t out,int B1,int maxc) {
 	long long q;
 	int r=0,B2=100*B1,i,B,j,delta;
+	printf("  ECM %d %d\n",B1,maxc);
 	mpz_t sigma,u,v,Qx,Qz,g,t,t1;
 	mpz_t Sx[D],Sz[D],beta[D],Tx,Tz,Rx,Rz,alpha;
 	mpz_init(t); mpz_init(t1);
@@ -764,14 +915,14 @@ void factorize2(mpz_t n) {
 	if(d<=42 && QS(n,m)) goto found;
 	if(pollardp1(n,m,500000,500000,2)) goto found;
 	if(ECM(n,m,2000,25)) goto found;
-	if(d<=46 && QS(n,m)) goto found;
+	if(d<=50 && QS(n,m)) goto found;
 	if(ECM(n,m,11000,90)) goto found;
-	if(d<=52 && QS(n,m)) goto found;
+	if(d<=58 && QS(n,m)) goto found;
 	if(ECM(n,m,50000,300)) goto found;
-	if(d<=56 && QS(n,m)) goto found;
+	if(d<=68 && QS(n,m)) goto found;
 	if(pollardp1(n,m,1000000,5000000,2)) goto found;
 	if(ECM(n,m,250000,700)) goto found;
-	if(d<=60 && QS(n,m)) goto found;
+	if(d<=80 && QS(n,m)) goto found;
 	if(ECM(n,m,1000000,1800)) goto found;
 	printf("last resort, try QS with %d digits\n",d);
 	if(QS(n,m)) goto found;
